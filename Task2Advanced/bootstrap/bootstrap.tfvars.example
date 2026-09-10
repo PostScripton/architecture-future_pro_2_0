@@ -1,0 +1,6 @@
+# Скопировать в bootstrap.tfvars и подставить свои значения.
+cloud_id  = "b1gxxxxxxxxxxxxxxxxx"
+folder_id = "b1gdddddddddddddddddd"
+zone      = "ru-central1-a"
+
+state_bucket_name = "future20-tfstate"

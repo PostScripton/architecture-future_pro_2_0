@@ -1,0 +1,13 @@
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+*.auto.tfvars
+override.tf
+override.tf.json
+
+# Локальные секреты и артефакты CI
+sa-key.json
+tfplan
+bootstrap.tfvars
