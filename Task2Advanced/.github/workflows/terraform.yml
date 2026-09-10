@@ -1,0 +1,138 @@
+name: terraform
+
+# В рабочем репозитории этот файл должен лежать по пути
+# .github/workflows/terraform.yml (в корне репозитория).
+# Здесь он размещён внутри Task2Advanced/ как часть решения задания.
+
+on:
+  pull_request:
+    paths:
+      - "Task2Advanced/**"
+  push:
+    branches: [master]
+    paths:
+      - "Task2Advanced/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Целевое окружение для apply"
+        type: choice
+        options: [dev, stage, prod]
+        default: dev
+
+# Минимально необходимые права токена: только чтение репозитория.
+permissions:
+  contents: read
+
+# Не запускаем два прогона на одно и то же окружение одновременно,
+# чтобы не конкурировать за один и тот же state-файл.
+concurrency:
+  group: terraform-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.16.1"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+  WORKDIR: Task2Advanced/envs/${{ github.event.inputs.environment || 'dev' }}
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Task2Advanced/envs/${{ github.event.inputs.environment || 'dev' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Format check
+        working-directory: Task2Advanced
+        run: terraform fmt -check -recursive
+
+      - name: Init (remote state)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.TFSTATE_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.TFSTATE_SECRET_KEY }}
+        run: terraform init -input=false -backend-config="${ENVIRONMENT}.s3.tfbackend"
+
+      - name: Validate
+        run: terraform validate -no-color
+
+      - name: Security scan (checkov)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ env.WORKDIR }}
+          framework: terraform
+          soft_fail: true
+
+      - name: Plan
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.TFSTATE_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.TFSTATE_SECRET_KEY }}
+          YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
+        run: |
+          printf '%s' "$YC_SA_KEY_JSON" > sa-key.json
+          export YC_SERVICE_ACCOUNT_KEY_FILE="$PWD/sa-key.json"
+          terraform plan -input=false -lock-timeout=180s \
+            -var-file="${ENVIRONMENT}.tfvars" -out=tfplan
+          rm -f sa-key.json
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ env.ENVIRONMENT }}
+          path: ${{ env.WORKDIR }}/tfplan
+          retention-days: 5
+
+  apply:
+    name: apply
+    needs: plan
+    # apply только для ручного запуска или пуша в master, не для pull_request.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    # GitHub Environment с обязательным ревьюером = кнопка approval перед apply.
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    defaults:
+      run:
+        working-directory: Task2Advanced/envs/${{ github.event.inputs.environment || 'dev' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Init (remote state)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.TFSTATE_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.TFSTATE_SECRET_KEY }}
+        run: terraform init -input=false -backend-config="${ENVIRONMENT}.s3.tfbackend"
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ env.ENVIRONMENT }}
+          path: ${{ env.WORKDIR }}
+
+      - name: Apply saved plan
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.TFSTATE_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.TFSTATE_SECRET_KEY }}
+          YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
+        run: |
+          printf '%s' "$YC_SA_KEY_JSON" > sa-key.json
+          export YC_SERVICE_ACCOUNT_KEY_FILE="$PWD/sa-key.json"
+          terraform apply -input=false -lock-timeout=180s -auto-approve tfplan
+          rm -f sa-key.json

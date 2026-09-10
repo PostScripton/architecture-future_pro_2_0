@@ -1,0 +1,20 @@
+# Частичная конфигурация backend "s3" для окружения prod.
+# Ключи доступа сюда НЕ пишутся - они передаются через
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (GitHub Secrets).
+
+bucket = "future20-tfstate"
+key    = "prod/vm/terraform.tfstate"
+region = "ru-central1"
+
+endpoints = {
+  s3 = "https://storage.yandexcloud.net"
+}
+
+# Yandex Object Storage не является полноценным AWS - отключаем проверки,
+# специфичные для AWS, и включаем нативную блокировку состояния через lock-файл.
+skip_region_validation      = true
+skip_credentials_validation = true
+skip_requesting_account_id  = true
+skip_metadata_api_check     = true
+skip_s3_checksum            = true
+use_lockfile                = true
